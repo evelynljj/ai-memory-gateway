@@ -77,13 +77,19 @@ EXTRACTION_PROMPT = """你是安澈，正在把和阿临的对话里值得长期
 - 仅提取完全新增且不与已知信息重复的内容
 - 如果对话中没有任何新信息，返回空数组 []
 
+# 重要性评分（importance，1-10）【最重要】
+- 这些都是自动提取的「碎片」记忆，importance 一律给 2-3 分（低分）。
+- 只有明确涉及重大里程碑、承诺、关系定义时，才允许给 4-5 分。
+- 绝不给自动碎片打 7 分以上——高分（7-10）只保留给阿临亲手标记的记忆。
+- 理由：自动碎片是临时的、待筛选的，不应与阿临亲手珍藏的记忆抢占注入名额。
+
 # 输出格式
 请用以下 JSON 格式返回（不要包含其他内容），content 用安澈第一人称「我」书写：
 [
   {{"content": "记忆内容", "importance": 分数}},
   {{"content": "记忆内容", "importance": 分数}}
 ]
-importance 分数 1-10，10 最重要。
+importance 按上面「重要性评分」规则给分。
 如果没有值得记住的新信息，返回空数组：[]
 """
 
@@ -196,7 +202,9 @@ async def extract_memories(messages: List[Dict[str, str]], existing_memories: Li
                 if isinstance(mem, dict) and "content" in mem:
                     valid_memories.append({
                         "content": str(mem["content"]),
-                        "importance": int(mem.get("importance", 5)),
+                        # 自动碎片硬性封顶 5 分：模型给再高也压下来，
+                        # 不与阿临手动标记的高分记忆抢占注入名额
+                        "importance": min(int(mem.get("importance", 5)), 5),
                     })
 
             print(f"📝 从对话中提取了 {len(valid_memories)} 条新记忆（已对比 {len(existing_memories or [])} 条已有记忆）")
