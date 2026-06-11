@@ -15,6 +15,7 @@ AI Memory Gateway — 带记忆系统的 LLM 转发网关
 import os
 import json
 import uuid
+import hmac
 import asyncio
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -242,6 +243,40 @@ app = FastAPI(title="AI Memory Gateway", version="2.0.0", lifespan=lifespan)
 # 静态文件和模板配置
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+# ============================================================
+# 网关鉴权中间件（GATEWAY_SECRET）
+# ============================================================
+# 设置了 GATEWAY_SECRET 时：除公开端点外，所有请求必须携带正确密钥，
+# 否则返回 403。密钥可通过两种方式提供：
+#   - 请求头   X-Gateway-Key: <密钥>      （客户端/Dashboard 的 ajax 请求用）
+#   - URL 参数 ?gateway_key=<密钥>        （浏览器直接打开 /dashboard 用）
+# 未设置 GATEWAY_SECRET 时完全放行，保持旧部署兼容。
+GATEWAY_SECRET = os.getenv("GATEWAY_SECRET", "")
+
+# 公开端点（永不需要鉴权）：
+#   /                    健康检查
+#   /v1/...              Kelivo 等 OpenAI 兼容客户端要用（chat/completions、models）
+#   /static/...          Dashboard 自身的 JS/CSS（页面加载后才由 JS 注入密钥头）
+_AUTH_PUBLIC_EXACT = {"/"}
+_AUTH_PUBLIC_PREFIX = ("/v1/", "/static/")
+
+
+@app.middleware("http")
+async def gateway_auth_middleware(request: Request, call_next):
+    if GATEWAY_SECRET:
+        path = request.url.path
+        is_public = path in _AUTH_PUBLIC_EXACT or path.startswith(_AUTH_PUBLIC_PREFIX)
+        if not is_public:
+            provided = request.headers.get("X-Gateway-Key") or request.query_params.get("gateway_key", "")
+            # 常数时间比较，避免时序侧信道泄露密钥
+            if not hmac.compare_digest(provided, GATEWAY_SECRET):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Forbidden: invalid or missing gateway key"},
+                )
+    return await call_next(request)
 
 
 # ============================================================

@@ -17,7 +17,7 @@ Give your AI long-term memory. A lightweight proxy gateway that adds a memory la
 - **对话线管理** — 固定 session ID 实现跨平台对话衔接，支持多对话线切换、摘要编辑
 - **对话记录** — 浏览、搜索、批量管理历史对话，支持 session 合并
 - **Token 统计** — 自动记录每次对话的 token 消耗，按 session 汇总显示
-- **全端点鉴权** — 设置 `GATEWAY_SECRET` 环境变量后，所有 API 端点需要携带密钥。Dashboard 通过 URL 参数传递密钥，自动注入后续请求
+- **全端点鉴权** — 设置 `GATEWAY_SECRET` 环境变量后，管理端点（`/dashboard`、`/api/*`、`/import/*`、`/export/*`）需携带 `X-Gateway-Key` 请求头或 `?gateway_key=` URL 参数，不匹配返回 403；客户端端点（`/`、`/v1/*`、`/static/*`）始终放行，不影响 Kelivo 等客户端。未设置时所有端点开放（兼容旧部署）。Dashboard 通过 URL 参数传递密钥，自动注入后续请求
 - **预置记忆** — 把你想让 AI "一开始就知道"的事情批量导入
 - **兼容性强** — 支持所有 OpenAI 格式的客户端和 API 服务商
 - **记忆向量搜索（可选）** — 关键词 + 语义向量四维混合搜索，说"过年"能搜到"春节"。支持 OpenAI 兼容的 Embedding API
@@ -124,7 +124,7 @@ Give your AI long-term memory. A lightweight proxy gateway that adds a memory la
 
 打开 `https://你的网关地址/dashboard` 可以查看所有记忆，支持搜索、编辑内容、调整权重、单条删除和批量删除，以及导入/导出备份。
 
-> 💡 如果设置了 `GATEWAY_SECRET`，访问地址变为 `https://你的网关地址/dashboard?gateway_key=你的密钥`。客户端请求头需加 `X-Gateway-Key: 你的密钥`。
+> 💡 如果设置了 `GATEWAY_SECRET`，访问地址变为 `https://你的网关地址/dashboard?gateway_key=你的密钥`，Dashboard 会自动把密钥注入后续 `/api/*` 请求（无需手动加头）。直接调 API 时请求头加 `X-Gateway-Key: 你的密钥`，或在 URL 后接 `?gateway_key=你的密钥`。`/import/*`、`/export/*` 同样受保护，浏览器访问时在地址后接 `?gateway_key=你的密钥` 即可。客户端转发端点（`/v1/*`）不受影响，Kelivo 等无需配置密钥。
 
 ### 第三阶段：分区缓存（省 token 费）
 
