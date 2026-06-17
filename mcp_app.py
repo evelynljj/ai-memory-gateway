@@ -40,7 +40,7 @@ _sec = TransportSecuritySettings(
 mcp_server = FastMCP("ai-memory-gateway", transport_security=_sec)
 
 
-@mcp_server.tool()
+@mcp_server.tool(name="search_memory", description="检索阿临与安澈的长期记忆库。当需要回忆两人之间发生过的事、过往对话、纪念日、共同经历等具体内容时调用。传入要回忆的主题或关键词，返回最相关的记忆条目（每条带日期）。")
 async def search_memory(query: str, limit: int = 10) -> str:
     """检索长期记忆（关键词 + 向量混合搜索）。
 
