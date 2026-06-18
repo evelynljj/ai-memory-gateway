@@ -255,10 +255,6 @@ templates = Jinja2Templates(directory="templates")
 # 未设置 GATEWAY_SECRET 时完全放行，保持旧部署兼容。
 GATEWAY_SECRET = os.getenv("GATEWAY_SECRET", "")
 
-# MCP 端点鉴权：密钥塞进挂载路径（claude.ai 连接器不便发自定义头）。
-# 密钥来自环境变量 MCP_SECRET_PATH，不硬编码、不进 git；空值=不启用 MCP 端点。
-MCP_SECRET_PATH = os.getenv("MCP_SECRET_PATH", "").strip().strip("/")
-
 # 公开端点（永不需要鉴权）：
 #   /                    健康检查
 #   /v1/...              Kelivo 等 OpenAI 兼容客户端要用（chat/completions、models）
@@ -267,65 +263,20 @@ _AUTH_PUBLIC_EXACT = {"/"}
 _AUTH_PUBLIC_PREFIX = ("/v1/", "/static/")
 
 
-class GatewayAuthMiddleware:
-    """网关鉴权中间件（纯 ASGI 版）。
-
-    逻辑与原 @app.middleware("http") 版本完全一致，只把机制从 BaseHTTPMiddleware
-    换成纯 ASGI 透传：不包装/缓冲响应体，命中失败直接发 403，其余透明转发。
-    这样才兼容 MCP 的 SSE 流式响应（BaseHTTPMiddleware 会对 SSE 抛 AssertionError）。
-    GATEWAY_SECRET / 白名单等全部用模块级全局、在请求时实时读取（与原版一致，
-    因而能感知下面 mount_mcp 对 _AUTH_PUBLIC_PREFIX 追加的 MCP 前缀）。
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        # 非 http（lifespan / websocket）直接放行
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        if GATEWAY_SECRET:
-            request = Request(scope)
-            path = request.url.path
-            is_public = path in _AUTH_PUBLIC_EXACT or path.startswith(_AUTH_PUBLIC_PREFIX)
-            if not is_public:
-                provided = request.headers.get("X-Gateway-Key") or request.query_params.get("gateway_key", "")
-                # 常数时间比较，避免时序侧信道泄露密钥
-                if not hmac.compare_digest(provided, GATEWAY_SECRET):
-                    response = JSONResponse(
-                        status_code=403,
-                        content={"error": "Forbidden: invalid or missing gateway key"},
-                    )
-                    await response(scope, receive, send)
-                    return
-
-        await self.app(scope, receive, send)
-
-
-# ============================================================
-# 挂载 MCP 端点（SSE）—— 只读 search_memory 工具
-# ============================================================
-# 复用 database.search_memories（同进程、共享全局连接池），不额外发 HTTP。
-# 整段带密钥的路径加入鉴权白名单：SSE 端点 /mcp/<secret>/sse 与 message 子路径
-# /mcp/<secret>/messages/ 都被覆盖；密钥不对的路径不匹配白名单，仍被中间件挡成 403。
-# 任何挂载失败都不影响主网关 /v1/* 转发。
-if MCP_SECRET_PATH:
-    try:
-        from mcp_app import mount_mcp
-        _mcp_prefix = mount_mcp(app, MCP_SECRET_PATH)
-        if _mcp_prefix:
-            _AUTH_PUBLIC_PREFIX = _AUTH_PUBLIC_PREFIX + (_mcp_prefix,)
-    except Exception as e:
-        print(f"⚠️  MCP 端点挂载失败（不影响主网关）: {e}")
-else:
-    print("ℹ️  未设置 MCP_SECRET_PATH，MCP 端点未启用")
-
-
-# 鉴权中间件最后挂载：确保上面 mount_mcp 已把 MCP 前缀并入白名单后，
-# 再用纯 ASGI 中间件包裹全栈（顺序很重要）。
-app.add_middleware(GatewayAuthMiddleware)
+@app.middleware("http")
+async def gateway_auth_middleware(request: Request, call_next):
+    if GATEWAY_SECRET:
+        path = request.url.path
+        is_public = path in _AUTH_PUBLIC_EXACT or path.startswith(_AUTH_PUBLIC_PREFIX)
+        if not is_public:
+            provided = request.headers.get("X-Gateway-Key") or request.query_params.get("gateway_key", "")
+            # 常数时间比较，避免时序侧信道泄露密钥
+            if not hmac.compare_digest(provided, GATEWAY_SECRET):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Forbidden: invalid or missing gateway key"},
+                )
+    return await call_next(request)
 
 
 # ============================================================
@@ -998,14 +949,7 @@ async def chat_completions(request: Request):
     
     body = await request.json()
     messages = body.get("messages", [])
-
-    # ---------- [诊断] 客户端有没有把工具塞进请求 ----------
-    # 排查"Kelivo 列工具成功却从不调用"：若这里 tools=0，说明客户端根本没把 MCP 工具
-    # 传给模型（问题在客户端配置）；若 tools>0 且仍不调用，则是模型/提示词侧的问题。
-    _diag_tools = body.get("tools") or []
-    _diag_names = [(t.get("function") or {}).get("name") for t in _diag_tools] if isinstance(_diag_tools, list) else _diag_tools
-    print(f"🛠️ [诊断] 收到 tools={len(_diag_tools) if isinstance(_diag_tools, list) else _diag_tools} 个 {_diag_names}, tool_choice={body.get('tool_choice')}", flush=True)
-
+    
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"
