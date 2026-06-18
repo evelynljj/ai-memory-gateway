@@ -998,7 +998,14 @@ async def chat_completions(request: Request):
     
     body = await request.json()
     messages = body.get("messages", [])
-    
+
+    # ---------- [诊断] 客户端有没有把工具塞进请求 ----------
+    # 排查"Kelivo 列工具成功却从不调用"：若这里 tools=0，说明客户端根本没把 MCP 工具
+    # 传给模型（问题在客户端配置）；若 tools>0 且仍不调用，则是模型/提示词侧的问题。
+    _diag_tools = body.get("tools") or []
+    _diag_names = [(t.get("function") or {}).get("name") for t in _diag_tools] if isinstance(_diag_tools, list) else _diag_tools
+    print(f"🛠️ [诊断] 收到 tools={len(_diag_tools) if isinstance(_diag_tools, list) else _diag_tools} 个 {_diag_names}, tool_choice={body.get('tool_choice')}", flush=True)
+
     # ---------- 检测是否应跳过对话存储 ----------
     # 客户端通过header显式声明（如标题生成等辅助请求）
     skip_conversation_log = request.headers.get("X-Skip-Conversation-Log", "").lower() == "true"
