@@ -364,6 +364,28 @@ def extract_search_keywords(query: str) -> List[str]:
             continue
         keywords.add(tag)
 
+    # 兜底 1：TF-IDF 没抽出任何中文词时，退回 jieba.cut 切词补
+    # 救「眠眠贪吃」「希腊旅游攻略」这类 jieba IDF 字典不收的组合词
+    has_chinese_kw = any(any('一' <= c <= '鿿' for c in k) for k in keywords)
+    if not has_chinese_kw:
+        for tok in jieba.cut(cleaned):
+            tok = tok.strip()
+            if not tok or len(tok) < 2:
+                continue
+            if EN_WORD_PATTERN.fullmatch(tok) or NUM_PATTERN.fullmatch(tok):
+                continue
+            if tok in _STOP_WORDS:
+                continue
+            # 必须含至少一个中文字，否则跳过（避免标点等垃圾 token）
+            if any('一' <= c <= '鿿' for c in tok):
+                keywords.add(tok)
+
+    # 兜底 2：纯中文且 ≤6 字的短查询，整句作为一个关键词兜底
+    # 救「眠眠」这种 TF-IDF 返回 [] 且 jieba.cut 只能切成单字的情形
+    is_pure_chinese = bool(cleaned) and all('一' <= c <= '鿿' for c in cleaned)
+    if is_pure_chinese and len(cleaned) <= 6:
+        keywords.add(cleaned)
+
     return list(keywords)
 
 
