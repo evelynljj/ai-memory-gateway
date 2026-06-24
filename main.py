@@ -2262,6 +2262,96 @@ async def api_backfill_memory_embeddings_status():
 
 
 # ============================================================
+# 临时诊断：服务器上 jieba / extract_search_keywords / ILIKE 实测
+# 用完即撤
+# ============================================================
+
+@app.get("/api/admin/debug-keywords")
+async def api_debug_keywords(q: str = ""):
+    """诊断关键词搜索链路：jieba 抽词 + extract_search_keywords + 直接 ILIKE 计数"""
+    import os, sys, locale
+    try:
+        import jieba, jieba.analyse
+    except Exception as e:
+        return {"error": f"jieba import failed: {e}"}
+
+    info = {
+        "query": q,
+        "python_version": sys.version,
+        "default_encoding": sys.getdefaultencoding(),
+        "filesystem_encoding": sys.getfilesystemencoding(),
+        "locale_getlocale": str(locale.getlocale()),
+        "env_LANG": os.environ.get("LANG"),
+        "env_LC_ALL": os.environ.get("LC_ALL"),
+        "env_PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING"),
+        "jieba_version": getattr(jieba, "__version__", "unknown"),
+        "jieba_dict_path": getattr(jieba.dt, "dictionary", None),
+    }
+
+    # IDF 文件路径与大小 + 几个目标词是否在 IDF 字典里
+    try:
+        loader = jieba.analyse.default_tfidf.idf_loader
+        idf_path = loader.path
+        info["idf_path"] = idf_path
+        info["idf_exists"] = os.path.exists(idf_path) if idf_path else False
+        info["idf_size_bytes"] = os.path.getsize(idf_path) if idf_path and os.path.exists(idf_path) else None
+        info["idf_freq_total_keys"] = len(loader.idf_freq) if hasattr(loader, "idf_freq") else None
+        info["idf_freq_first3_keys_repr"] = [repr(k) for k in list(loader.idf_freq.keys())[:3]] if hasattr(loader, "idf_freq") else None
+        # 关键检验：目标词在不在 IDF 字典里
+        probe = ["鹿特丹", "希腊", "海牙", "眠眠", "Sophia"]
+        info["idf_has_word"] = {w: (w in loader.idf_freq) for w in probe}
+    except Exception as e:
+        info["idf_error"] = repr(e)
+
+    if not q:
+        return info
+
+    # jieba 原始抽词
+    try:
+        tags = jieba.analyse.extract_tags(q, topK=10)
+        info["jieba_extract_tags"] = tags
+    except Exception as e:
+        info["jieba_extract_tags_error"] = str(e)
+
+    try:
+        cuts = list(jieba.cut(q))
+        info["jieba_cut"] = cuts
+    except Exception as e:
+        info["jieba_cut_error"] = str(e)
+
+    # extract_search_keywords 最终结果
+    try:
+        keywords = _db_module.extract_search_keywords(q)
+        info["extract_search_keywords"] = keywords
+    except Exception as e:
+        info["extract_search_keywords_error"] = str(e)
+
+    # 直接用查询字符串本身做 ILIKE，看 postgres 能不能匹配中文
+    try:
+        pool = await _db_module.get_pool()
+        async with pool.acquire() as conn:
+            literal_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE is_active = TRUE AND content ILIKE '%' || $1 || '%'",
+                q,
+            )
+            info["ilike_literal_count"] = literal_count
+
+            # 也试一下每个抽出来的 keyword 单独 ILIKE 计数
+            ilike_per_keyword = {}
+            for kw in info.get("extract_search_keywords", []) or []:
+                cnt = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE is_active = TRUE AND content ILIKE '%' || $1 || '%'",
+                    kw,
+                )
+                ilike_per_keyword[kw] = cnt
+            info["ilike_per_keyword"] = ilike_per_keyword
+    except Exception as e:
+        info["ilike_error"] = str(e)
+
+    return info
+
+
+# ============================================================
 # 模型列表 API（/api/models）
 # 设置面板的 combo-box 用，根据 API_BASE_URL 自动适配
 # ============================================================
